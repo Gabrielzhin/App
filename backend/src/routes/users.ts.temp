@@ -1,0 +1,884 @@
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+// Helper function to check if user is blocked
+async function isUserBlocked(userId: string, targetUserId: string): Promise<boolean> {
+  const blockRelationship = await prisma.friendship.findFirst({
+    where: {
+      OR: [
+        { userId, friendId: targetUserId, status: 'BLOCKED' },
+        { userId: targetUserId, friendId: userId, status: 'BLOCKED' },
+      ],
+    },
+  });
+  return !!blockRelationship;
+}
+
+interface CreateMemoryBody {
+  content: string;
+  photos?: string[];
+  privacy?: 'PUBLIC' | 'FRIENDS' | 'PRIVATE';
+  title?: string;
+  memoryDate?: string;
+  taggedUserIds?: string[];
+  aboutUserId?: string;
+  groupId?: string;
+  categoryIds?: string[];
+  location?: string;
+  latitude?: number;
+  longitude?: number;
+  moods?: string[];
+  isDraft?: boolean;
+}
+
+interface UpdateMemoryBody {
+  title?: string;
+  content?: string;
+  photos?: string[];
+  privacy?: 'PUBLIC' | 'FRIENDS' | 'PRIVATE';
+  memoryDate?: string;
+  taggedUserIds?: string[];
+  categoryIds?: string[];
+  location?: string;
+  latitude?: number;
+  longitude?: number;
+  moods?: string[];
+  isDraft?: boolean;
+}
+
+// Helper constant for memory includes
+const memoryInclude = {
+  user: {
+    select: {
+      id: true,
+      displayName: true,
+      email: true,
+      username: true,
+      profilePicture: true,
+    },
+  },
+  comments: {
+    include: {
+      user: {
+        select: {
+          id: true,
+          displayName: true,
+          email: true,
+          username: true,
+          profilePicture: true,
+        },
+      },
+    },
+  },
+  categories: {
+    include: {
+      category: true,
+    },
+  },
+};
+
+export async function memoryRoutes(fastify: FastifyInstance) {
+  // GET /api/memories/me - Get current user's timeline (all memories by or about me)
+  fastify.get(
+    '/api/memories/me',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // Get list of friends to show their FRIENDS-privacy memories
+      const friendships = await prisma.friendship.findMany({
+        where: {
+          status: 'ACCEPTED',
+          OR: [
+            { userId: request.user.id },
+            { friendId: request.user.id },
+          ],
+        },
+        select: {
+          userId: true,
+          friendId: true,
+        },
+      });
+
+      const friendIds = friendships.map(f => 
+        f.userId === request.user.id ? f.friendId : f.userId
+      );
+
+      const memories = await prisma.memory.findMany({
+        where: {
+          isDraft: false,  // Exclude drafts
+          OR: [
+            // My own memories (any privacy)
+            { userId: request.user.id },
+            // Memories about me (not private, unless I'm the author)
+            {
+              aboutUserId: request.user.id,
+              OR: [
+                { userId: request.user.id },  // I'm the author
+                { privacy: { in: ['PUBLIC', 'FRIENDS'] } },  // Not private
+              ],
+            },
+            // Memories I'm tagged in (not private, unless I'm the author)
+            {
+              taggedUserIds: { has: request.user.id },
+              OR: [
+                { userId: request.user.id },  // I'm the author
+                { privacy: { in: ['PUBLIC', 'FRIENDS'] } },  // Not private
+              ],
+            },
+            // Friends' memories with FRIENDS privacy
+            ...(friendIds.length > 0 ? [{
+              userId: { in: friendIds },
+              privacy: 'FRIENDS',
+            }] : []),
+            // Anyone's PUBLIC memories
+            {
+              privacy: 'PUBLIC',
+            },
+          ],
+        },
+        include: memoryInclude,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return reply.send(memories);
+    }
+  );
+
+  // GET /api/memories/user/:userId - Get friend's timeline (shared memories between current user and friend)
+  fastify.get<{ Params: { userId: string } }>(
+    '/api/memories/user/:userId',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest<{ Params: { userId: string } }>, reply: FastifyReply) => {
+      const friendId = request.params.userId;
+      const currentUserId = request.user.id;
+
+      // Check if users have blocked each other
+      const blocked = await isUserBlocked(currentUserId, friendId);
+      if (blocked) {
+        return reply.code(403).send({ error: 'Cannot view this user\'s content' });
+      }
+
+      // Check if current user is friends with the viewed user
+      const friendship = await prisma.friendship.findFirst({
+        where: {
+          OR: [
+            { userId: currentUserId, friendId: friendId, status: 'ACCEPTED' },
+            { userId: friendId, friendId: currentUserId, status: 'ACCEPTED' },
+          ],
+        },
+      });
+      const areFriends = !!friendship;
+
+      // Show memories where:
+      // 1. Created by me about/with the friend (any privacy)
+      // 2. Created by friend based on privacy:
+      //    - PUBLIC: Always visible to everyone
+      //    - FRIENDS: Only visible if we're friends
+      //    - ONLY_TAGGED: Only visible if current user is tagged
+      //    - PRIVATE: Never visible to others
+      const memories = await prisma.memory.findMany({
+        where: {
+          isDraft: false,  // Exclude drafts
+          OR: [
+            // Memories by current user about/with the friend (any privacy)
+            {
+              userId: currentUserId,
+              OR: [
+                { aboutUserId: friendId },
+                { taggedUserIds: { has: friendId } },
+              ],
+            },
+            // Friend's PUBLIC memories (always visible)
+            {
+              userId: friendId,
+              privacy: 'PUBLIC',
+            },
+            // Friend's FRIENDS memories (only if we're friends)
+            ...(areFriends ? [{
+              userId: friendId,
+              privacy: 'FRIENDS',
+            }] : []),
+            // Friend's ONLY_TAGGED memories (only if current user is tagged)
+            {
+              userId: friendId,
+              privacy: 'ONLY_TAGGED',
+              taggedUserIds: { has: currentUserId },
+            },
+          ],
+        },
+        include: memoryInclude,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return reply.send(memories);
+    }
+  );
+
+  // GET /api/memories/:id - Get single memory with access control
+  fastify.get<{ Params: { id: string } }>(
+    '/api/memories/:id',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const memoryId = request.params.id;
+      const currentUserId = request.user.id;
+
+      const memory = await prisma.memory.findUnique({
+        where: { id: memoryId },
+        include: {
+          ...memoryInclude,
+          group: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      });
+
+      if (!memory) {
+        return reply.code(404).send({ error: 'Memory not found' });
+      }
+
+      // Check access permissions
+      const isOwner = memory.userId === currentUserId;
+      const isTagged = memory.taggedUserIds.includes(currentUserId);
+      const isAboutUser = memory.aboutUserId === currentUserId;
+
+      // If it's a group memory, check membership
+      if (memory.groupId) {
+        const membership = await prisma.groupMember.findUnique({
+          where: {
+            groupId_userId: {
+              groupId: memory.groupId,
+              userId: currentUserId,
+            },
+          },
+        });
+
+        if (!membership) {
+          return reply.code(403).send({ error: 'Access denied' });
+        }
+      } else {
+        // Non-group memory privacy check
+        if (memory.privacy === 'PRIVATE' && !isOwner) {
+          return reply.code(403).send({ error: 'Access denied' });
+        }
+
+        if (memory.privacy === 'FRIENDS' && !isOwner) {
+          // Check if viewer is friends with owner
+          const friendship = await prisma.friendship.findFirst({
+            where: {
+              OR: [
+                { userId: currentUserId, friendId: memory.userId, status: 'ACCEPTED' },
+                { userId: memory.userId, friendId: currentUserId, status: 'ACCEPTED' },
+              ],
+            },
+          });
+
+          if (!friendship && !isTagged && !isAboutUser) {
+            return reply.code(403).send({ error: 'Access denied' });
+          }
+        }
+      }
+
+      return reply.send(memory);
+    }
+  );
+
+  // GET /api/memories - List all memories (public read)
+  fastify.get<{ Querystring: { category?: string; taggedUserId?: string } }>(
+    '/api/memories',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest<{ Querystring: { category?: string; taggedUserId?: string } }>, reply: FastifyReply) => {
+      const { category, taggedUserId } = request.query;
+      
+      // Build where clause
+      const where: any = { userId: request.user.id };
+      
+      // Filter by category name if provided
+      if (category) {
+        where.categories = {
+          some: {
+            category: {
+              name: category,
+            },
+          },
+        };
+      }
+      
+      // Filter by tagged user if provided
+      if (taggedUserId) {
+        where.taggedUserIds = { has: taggedUserId };
+      }
+
+      const memories = await prisma.memory.findMany({
+        where,
+        include: memoryInclude,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      return reply.send(memories);
+    }
+  );
+
+  // POST /api/memories - Create memory (requires FULL mode)
+  fastify.post<{ Body: CreateMemoryBody }>(
+    '/api/memories',
+    {
+      preHandler: [fastify.authenticate, fastify.requireFullMode],
+    },
+    async (request: FastifyRequest<{ Body: CreateMemoryBody }>, reply: FastifyReply) => {
+      const { content, photos, privacy, title, memoryDate, taggedUserIds, aboutUserId, groupId, categoryIds, location, latitude, longitude, moods, isDraft } = request.body;
+
+      // Validate that either content or photos exist
+      if ((!content || content.trim().length === 0) && (!photos || photos.length === 0)) {
+        return reply.code(400).send({ error: 'Content or photos are required' });
+      }
+
+      // If groupId is provided, verify user is a member
+      if (groupId) {
+        const membership = await prisma.groupMember.findUnique({
+          where: {
+            groupId_userId: {
+              groupId,
+              userId: request.user.id,
+            },
+          },
+        });
+
+        if (!membership) {
+          return reply.code(403).send({ error: 'You must be a group member to create memories' });
+        }
+      }
+
+      // If categoryIds are provided, verify they belong to the user
+      if (categoryIds && categoryIds.length > 0) {
+        const categories = await prisma.category.findMany({
+          where: {
+            id: { in: categoryIds },
+            userId: request.user.id,
+          },
+        });
+
+        if (categories.length !== categoryIds.length) {
+          return reply.code(400).send({ error: 'Some categories do not belong to you' });
+        }
+      }
+
+      const memory = await prisma.memory.create({
+        data: {
+          title: title || null,
+          content: content || '',
+          photos: photos || [],
+          privacy: privacy || 'PRIVATE',
+          userId: request.user.id,
+          memoryDate: memoryDate ? new Date(memoryDate) : null,
+          taggedUserIds: taggedUserIds || [],
+          aboutUserId: aboutUserId || null,
+          groupId: groupId || null,
+          location: location || null,
+          latitude: latitude ? latitude.toString() : null,
+          longitude: longitude ? longitude.toString() : null,
+          moods: moods || [],
+          isDraft: isDraft || false,
+          lastAutoSaved: isDraft ? new Date() : null,
+          categories: categoryIds && categoryIds.length > 0 ? {
+            create: categoryIds.map(categoryId => ({
+              categoryId,
+            })),
+          } : undefined,
+        },
+        include: {
+          categories: {
+            include: {
+              category: true,
+            },
+          },
+        },
+      });
+
+      return reply.code(201).send(memory);
+    }
+  );
+
+  // PUT /api/memories/:id - Update memory (requires FULL mode)
+  fastify.put<{ Params: { id: string }; Body: UpdateMemoryBody }>(
+    '/api/memories/:id',
+    {
+      preHandler: [fastify.authenticate, fastify.requireFullMode],
+    },
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: UpdateMemoryBody }>,
+      reply: FastifyReply
+    ) => {
+      const { title, content, photos, privacy, memoryDate, taggedUserIds, categoryIds, location, latitude, longitude, moods, isDraft } = request.body;
+
+      // Check if memory exists and belongs to user
+      const existingMemory = await prisma.memory.findUnique({
+        where: { id: request.params.id },
+      });
+
+      if (!existingMemory) {
+        return reply.code(404).send({ error: 'Memory not found' });
+      }
+
+      if (existingMemory.userId !== request.user.id) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      // If categoryIds are provided, verify they belong to the user and update
+      if (categoryIds !== undefined) {
+        if (categoryIds.length > 0) {
+          const categories = await prisma.category.findMany({
+            where: {
+              id: { in: categoryIds },
+              userId: request.user.id,
+            },
+          });
+
+          if (categories.length !== categoryIds.length) {
+            return reply.code(400).send({ error: 'Some categories do not belong to you' });
+          }
+        }
+
+        // Delete existing category associations
+        await prisma.memoryCategory.deleteMany({
+          where: { memoryId: request.params.id },
+        });
+
+        // Create new associations
+        if (categoryIds.length > 0) {
+          await prisma.memoryCategory.createMany({
+            data: categoryIds.map(categoryId => ({
+              memoryId: request.params.id,
+              categoryId,
+            })),
+          });
+        }
+      }
+
+      const memory = await prisma.memory.update({
+        where: { id: request.params.id },
+        data: {
+          ...(title !== undefined && { title: title || null }),
+          ...(content !== undefined && { content }),
+          ...(photos !== undefined && { photos }),
+          ...(privacy !== undefined && { privacy }),
+          ...(memoryDate !== undefined && { memoryDate: memoryDate ? new Date(memoryDate) : null }),
+          ...(taggedUserIds !== undefined && { taggedUserIds }),
+          ...(location !== undefined && { location: location || null }),
+          ...(latitude !== undefined && { latitude: latitude ? latitude.toString() : null }),
+          ...(longitude !== undefined && { longitude: longitude ? longitude.toString() : null }),
+          ...(moods !== undefined && { moods }),
+          ...(isDraft !== undefined && { isDraft, lastAutoSaved: isDraft ? new Date() : null }),
+        },
+        include: {
+          categories: {
+            include: {
+              category: true,
+            },
+          },
+        },
+      });
+
+      return reply.send(memory);
+    }
+  );
+
+  // DELETE /api/memories/:id - Delete memory (requires FULL mode)
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/memories/:id',
+    {
+      preHandler: [fastify.authenticate, fastify.requireFullMode],
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      // Check if memory exists and belongs to user
+      const memory = await prisma.memory.findUnique({
+        where: { id: request.params.id },
+      });
+
+      if (!memory) {
+        return reply.code(404).send({ error: 'Memory not found' });
+      }
+
+      if (memory.userId !== request.user.id) {
+        return reply.code(403).send({ error: 'Access denied' });
+      }
+
+      await prisma.memory.delete({
+        where: { id: request.params.id },
+      });
+
+      return reply.code(204).send();
+    }
+  );
+
+  // POST /api/memories/draft - Auto-save draft (doesn't require FULL mode)
+  fastify.post<{ Body: CreateMemoryBody & { id?: string } }>(
+    '/api/memories/draft',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest<{ Body: CreateMemoryBody & { id?: string } }>, reply: FastifyReply) => {
+      const { id, content, photos, title, memoryDate, categoryIds, location, latitude, longitude, moods } = request.body;
+
+      // If id is provided, update existing draft
+      if (id) {
+        const existingDraft = await prisma.memory.findUnique({
+          where: { id },
+        });
+
+        if (!existingDraft) {
+          return reply.code(404).send({ error: 'Draft not found' });
+        }
+
+        if (existingDraft.userId !== request.user.id) {
+          return reply.code(403).send({ error: 'Access denied' });
+        }
+
+        if (!existingDraft.isDraft) {
+          return reply.code(400).send({ error: 'Cannot update published memory as draft' });
+        }
+
+        // Update category associations if provided
+        if (categoryIds !== undefined) {
+          await prisma.memoryCategory.deleteMany({
+            where: { memoryId: id },
+          });
+
+          if (categoryIds.length > 0) {
+            await prisma.memoryCategory.createMany({
+              data: categoryIds.map(categoryId => ({
+                memoryId: id,
+                categoryId,
+              })),
+            });
+          }
+        }
+
+        const draft = await prisma.memory.update({
+          where: { id },
+          data: {
+            content: content || '',
+            photos: photos || [],
+            title: title || null,
+            memoryDate: memoryDate ? new Date(memoryDate) : null,
+            location: location || null,
+            latitude: latitude ? latitude.toString() : null,
+            longitude: longitude ? longitude.toString() : null,
+            moods: moods || [],
+            lastAutoSaved: new Date(),
+          },
+          include: memoryInclude,
+        });
+
+        return reply.send(draft);
+      }
+
+      // Create new draft
+      const draft = await prisma.memory.create({
+        data: {
+          content: content || '',
+          photos: photos || [],
+          title: title || null,
+          userId: request.user.id,
+          memoryDate: memoryDate ? new Date(memoryDate) : null,
+          location: location || null,
+          latitude: latitude ? latitude.toString() : null,
+          longitude: longitude ? longitude.toString() : null,
+          moods: moods || [],
+          isDraft: true,
+          lastAutoSaved: new Date(),
+          categories: categoryIds && categoryIds.length > 0 ? {
+            create: categoryIds.map(categoryId => ({
+              categoryId,
+            })),
+          } : undefined,
+        },
+        include: memoryInclude,
+      });
+
+      return reply.code(201).send(draft);
+    }
+  );
+
+  // GET /api/memories/drafts - Get user's drafts
+  fastify.get(
+    '/api/memories/drafts',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const drafts = await prisma.memory.findMany({
+        where: {
+          userId: request.user.id,
+          isDraft: true,
+        },
+        include: memoryInclude,
+        orderBy: {
+          lastAutoSaved: 'desc',
+        },
+      });
+
+      return reply.send(drafts);
+    }
+  );
+
+  // POST /api/memories/:id/link - Link a memory to another (auto-creates collection)
+  fastify.post(
+    '/api/memories/:id/link',
+    {
+      preHandler: [fastify.authenticate, fastify.requireFullMode],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+      const { targetMemoryId } = request.body as { targetMemoryId: string };
+
+      if (!targetMemoryId) {
+        return reply.code(400).send({ error: 'Target memory ID is required' });
+      }
+
+      try {
+        // Verify both memories exist and user owns them
+        const [sourceMemory, targetMemory] = await Promise.all([
+          prisma.memory.findUnique({ where: { id } }),
+          prisma.memory.findUnique({ where: { id: targetMemoryId } }),
+        ]);
+
+        if (!sourceMemory || !targetMemory) {
+          return reply.code(404).send({ error: 'Memory not found' });
+        }
+
+        if (sourceMemory.userId !== request.user.id || targetMemory.userId !== request.user.id) {
+          return reply.code(403).send({ error: 'You can only link your own memories' });
+        }
+
+        // Check if either memory already has a collection
+        const existingCollections = await prisma.memoryInCollection.findMany({
+          where: {
+            OR: [
+              { memoryId: id },
+              { memoryId: targetMemoryId },
+            ],
+          },
+          include: {
+            collection: true,
+          },
+        });
+
+        let collection;
+        let sourceInCollection = existingCollections.find(c => c.memoryId === id);
+        let targetInCollection = existingCollections.find(c => c.memoryId === targetMemoryId);
+
+        if (sourceInCollection && targetInCollection) {
+          // Both already in collections
+          if (sourceInCollection.collectionId === targetInCollection.collectionId) {
+            // Already linked in same collection
+            return reply.send({ 
+              message: 'Memories are already linked',
+              collection: sourceInCollection.collection,
+            });
+          } else {
+            // In different collections - merge them
+            const sourceCollection = sourceInCollection.collection;
+            const targetCollection = targetInCollection.collection;
+
+            // Move all memories from target collection to source collection
+            await prisma.memoryInCollection.updateMany({
+              where: { collectionId: targetCollection.id },
+              data: { collectionId: sourceCollection.id },
+            });
+
+            // Delete the now-empty target collection
+            await prisma.memoryCollection.delete({
+              where: { id: targetCollection.id },
+            });
+
+            collection = sourceCollection;
+          }
+        } else if (sourceInCollection) {
+          // Source has collection, add target to it
+          collection = sourceInCollection.collection;
+          const maxOrder = await prisma.memoryInCollection.findFirst({
+            where: { collectionId: collection.id },
+            orderBy: { order: 'desc' },
+          });
+
+          await prisma.memoryInCollection.create({
+            data: {
+              memoryId: targetMemoryId,
+              collectionId: collection.id,
+              order: (maxOrder?.order ?? 0) + 1,
+            },
+          });
+        } else if (targetInCollection) {
+          // Target has collection, add source to it
+          collection = targetInCollection.collection;
+          const maxOrder = await prisma.memoryInCollection.findFirst({
+            where: { collectionId: collection.id },
+            orderBy: { order: 'desc' },
+          });
+
+          await prisma.memoryInCollection.create({
+            data: {
+              memoryId: id,
+              collectionId: collection.id,
+              order: (maxOrder?.order ?? 0) + 1,
+            },
+          });
+        } else {
+          // Neither has a collection, create a new one
+          // Use source memory's title as collection name
+          const collectionTitle = sourceMemory.title || 
+                                  `Memories from ${new Date(sourceMemory.memoryDate || sourceMemory.createdAt).toLocaleDateString()}`;
+
+          collection = await prisma.memoryCollection.create({
+            data: {
+              userId: request.user.id,
+              title: collectionTitle,
+              isAutoGenerated: true,
+              memories: {
+                create: [
+                  { memoryId: id, order: 0 },
+                  { memoryId: targetMemoryId, order: 1 },
+                ],
+              },
+            },
+          });
+        }
+
+        return reply.send({
+          message: 'Memories linked successfully',
+          collection,
+        });
+      } catch (error) {
+        console.error('Failed to link memories:', error);
+        return reply.code(500).send({ error: 'Failed to link memories' });
+      }
+    }
+  );
+
+  // DELETE /api/memories/:id/unlink - Remove memory from its collection
+  fastify.delete(
+    '/api/memories/:id/unlink',
+    {
+      preHandler: [fastify.authenticate, fastify.requireFullMode],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      try {
+        // Verify memory ownership
+        const memory = await prisma.memory.findUnique({ where: { id } });
+        if (!memory) {
+          return reply.code(404).send({ error: 'Memory not found' });
+        }
+        if (memory.userId !== request.user.id) {
+          return reply.code(403).send({ error: 'Access denied' });
+        }
+
+        // Find and remove from collection
+        const memoryInCollection = await prisma.memoryInCollection.findFirst({
+          where: { memoryId: id },
+          include: { collection: true },
+        });
+
+        if (!memoryInCollection) {
+          return reply.send({ message: 'Memory is not part of any collection' });
+        }
+
+        // Remove the link
+        await prisma.memoryInCollection.delete({
+          where: { id: memoryInCollection.id },
+        });
+
+        // Check if collection now has less than 2 memories - if so, delete it
+        const remainingMemories = await prisma.memoryInCollection.count({
+          where: { collectionId: memoryInCollection.collectionId },
+        });
+
+        if (remainingMemories < 2) {
+          await prisma.memoryCollection.delete({
+            where: { id: memoryInCollection.collectionId },
+          });
+          return reply.send({ 
+            message: 'Memory unlinked and collection removed (less than 2 memories remaining)',
+          });
+        }
+
+        return reply.send({ message: 'Memory unlinked successfully' });
+      } catch (error) {
+        console.error('Failed to unlink memory:', error);
+        return reply.code(500).send({ error: 'Failed to unlink memory' });
+      }
+    }
+  );
+
+  // GET /api/memories/:id/collection - Get the collection this memory belongs to
+  fastify.get(
+    '/api/memories/:id/collection',
+    {
+      preHandler: [fastify.authenticate],
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
+
+      try {
+        const memoryInCollection = await prisma.memoryInCollection.findFirst({
+          where: { memoryId: id },
+          include: {
+            collection: {
+              include: {
+                memories: {
+                  include: {
+                    memory: {
+                      select: {
+                        id: true,
+                        title: true,
+                        content: true,
+                        photos: true,
+                        memoryDate: true,
+                        createdAt: true,
+                      },
+                    },
+                  },
+                  orderBy: {
+                    order: 'asc',
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        if (!memoryInCollection) {
+          return reply.send({ collection: null });
+        }
+
+        // Verify user can see this collection (owns the memory)
+        const memory = await prisma.memory.findUnique({ 
+          where: { id },
+          select: { userId: true },
+        });
+
+        if (!memory || memory.userId !== request.user.id) {
+          return reply.code(403).send({ error: 'Access denied' });
+        }
+
+        return reply.send({ collection: memoryInCollection.collection });
+      } catch (error) {
+        console.error('Failed to fetch memory collection:', error);
+        return reply.code(500).send({ error: 'Failed to fetch memory collection' });
+      }
+    }
+  );
+}

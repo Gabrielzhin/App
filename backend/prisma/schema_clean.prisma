@@ -1,0 +1,575 @@
+// This is your Prisma schema file
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserMode {
+  RESTRICTED
+  FULL
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  PAUSED
+}
+
+enum PayoutMethodType {
+  GIFT_CARD  // Tango gift cards
+  PAYPAL
+  STRIPE_CONNECT
+}
+
+enum ReferralStatus {
+  PENDING      // Referred user signed up but not paid yet
+  QUALIFIED    // Referred user paid, payout scheduled
+  PAID         // Payout completed
+  CANCELED     // Referred user canceled before qualifying
+}
+
+enum FriendshipStatus {
+  PENDING      // Friend request sent
+  ACCEPTED     // Friends
+  BLOCKED      // User blocked the other user
+}
+
+enum GroupMemberRole {
+  OWNER        // Created the group
+  ADMIN        // Can manage members and settings
+  MEMBER       // Regular member
+}
+
+enum GroupPrivacy {
+  PUBLIC        // Anyone can find and join
+  PRIVATE       // Invite-only, hidden from search
+  FRIENDS_ONLY  // Only friends of members can see
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+enum ProfileVisibility {
+  PUBLIC        // Anyone can view profile and memories
+  FRIENDS_ONLY  // Only friends can view (default)
+  PRIVATE       // Only user can view
+}
+
+model User {
+  id               String        @id @default(cuid())
+  email            String        @unique
+  username         String?       @unique
+  name             String?
+  profilePicture   String?
+  passwordHash     String
+  mode             UserMode      @default(RESTRICTED)
+  stripeCustomerId String?       @unique
+  
+  // Verification
+  emailVerified    Boolean       @default(false)
+  emailVerificationToken String?
+  emailVerificationExpiry DateTime?
+  phoneVerified    Boolean       @default(false)
+  phone            String?
+  phoneVerificationToken String?
+  phoneVerificationExpiry DateTime?
+  
+  // Privacy settings
+  profileVisibility ProfileVisibility @default(PRIVATE)
+  
+  // Referral system
+  referralCode     String        @unique @default(cuid())
+  referredBy       String?
+  referrer         User?         @relation("UserReferrals", fields: [referredBy], references: [id], onDelete: SetNull)
+  referrals        User[]        @relation("UserReferrals")
+  
+  subscription     Subscription?
+  memories         Memory[]
+  comments         Comment[]
+  payouts          Payout[]
+  payoutMethods    PayoutMethod[]
+  referralsMade    Referral[]    @relation("ReferrerReferrals")
+  referralsReceived Referral[]   @relation("RefereeReferrals")
+  
+  // Friendships
+  friendshipsInitiated Friendship[] @relation("FriendshipInitiator")
+  friendshipsReceived  Friendship[] @relation("FriendshipReceiver")
+  
+  // Groups
+  groupMemberships GroupMember[]
+  groupsCreated    Group[]            @relation("GroupCreator")
+  groupInvitesSent GroupInvitation[]  @relation("GroupInviter")
+  groupInvitesReceived GroupInvitation[] @relation("GroupInvitee")
+  
+  // Categories
+  categories       Category[]
+  
+  // Relationships
+  relationshipCategories    RelationshipCategory[]
+  relationshipSubcategories RelationshipSubcategory[]
+  relationshipDetails       RelationshipDetail[]
+  friendRelationships       FriendRelationship[]
+  
+  // Memory Collections
+  memoryCollections MemoryCollection[]
+
+  // Messages
+  sentGroupMessages     GroupMessage[]     @relation("SentGroupMessages")
+  sentDirectMessages    DirectMessage[]    @relation("SentDirectMessages")
+  receivedDirectMessages DirectMessage[]   @relation("ReceivedDirectMessages")
+  
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  stripeSubscriptionId String             @unique
+  stripeCustomerId     String
+  status               SubscriptionStatus
+  plan                 String
+  
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  trialStart           DateTime?
+  trialEnd             DateTime?
+  
+  cancelAtPeriodEnd    Boolean            @default(false)
+  canceledAt           DateTime?
+  
+  gracePeriodEndsAt    DateTime?
+  
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+}
+
+enum MemoryPrivacy {
+  PUBLIC       // Everyone can see
+  FRIENDS      // All friends can see
+  ONLY_TAGGED  // Only tagged users can see
+  PRIVATE      // Only owner can see
+}
+
+model Memory {
+  id            String        @id @default(cuid())
+  title         String?       // Optional title
+  content       String
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  aboutUserId   String?       // Whose timeline this belongs to (for memories created on friend pages)
+  taggedUserIds String[]      // Array of user IDs tagged in this memory
+  memoryDate    DateTime?     // When the memory actually happened (vs createdAt)
+  
+  groupId       String?       // Group this memory belongs to (visible to all group members)
+  group         Group?        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  
+  privacy       MemoryPrivacy @default(PUBLIC)
+  photos        String[]      // Array of Supabase Storage URLs
+  
+  // Location tagging
+  location      String?       // Display name like "Central Park, New York"
+  latitude      Decimal?      @db.Decimal(10, 8)
+  longitude     Decimal?      @db.Decimal(11, 8)
+  
+  // Mood tracking
+  moods         String[]      // Array of mood strings (e.g., ["happy 😊", "excited 🎉"])
+  
+  // Draft functionality
+  isDraft       Boolean       @default(false)
+  lastAutoSaved DateTime?     // Last auto-save timestamp
+  
+  comments      Comment[]
+  categories    MemoryCategory[]
+  collectionsIn MemoryInCollection[]
+  
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  
+  @@index([groupId])
+  @@index([userId, isDraft])  // Index for fetching user's drafts
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  content   String
+  memoryId  String
+  memory    Memory   @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payout {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  amount          Int       // Amount in cents
+  currency        String    @default("usd")
+  status          String    // pending, completed, failed
+  
+  referralId      String?   @unique
+  referral        Referral? @relation(fields: [referralId], references: [id], onDelete: SetNull)
+  
+  payoutMethodId  String?
+  payoutMethod    PayoutMethod? @relation(fields: [payoutMethodId], references: [id], onDelete: SetNull)
+  
+  providerPayoutId String?  // External provider transaction ID
+  failureReason   String?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model PayoutMethod {
+  id        String          @id @default(cuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type      PayoutMethodType
+  details   Json            // Provider-specific details (email for PayPal, account ID for Stripe Connect, etc.)
+  
+  isDefault Boolean         @default(false)
+  isActive  Boolean         @default(true)
+  
+  payouts   Payout[]
+  
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  
+  @@index([userId, isDefault])
+}
+
+model Referral {
+  id                String         @id @default(cuid())
+  referrerId        String
+  referrer          User           @relation("ReferrerReferrals", fields: [referrerId], references: [id], onDelete: Cascade)
+  
+  refereeId         String         @unique
+  referee           User           @relation("RefereeReferrals", fields: [refereeId], references: [id], onDelete: Cascade)
+  
+  status            ReferralStatus @default(PENDING)
+  
+  qualifiedAt       DateTime?      // When referee completed first payment
+  scheduledPayoutAt DateTime?      // When payout should be processed
+  
+  payout            Payout?
+  
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  
+  @@index([status, scheduledPayoutAt])
+  @@index([referrerId])
+}
+
+model Friendship {
+  id          String           @id @default(cuid())
+  
+  userId      String           // User who initiated the friendship/request
+  user        User             @relation("FriendshipInitiator", fields: [userId], references: [id], onDelete: Cascade)
+  
+  friendId    String           // User who received the request
+  friend      User             @relation("FriendshipReceiver", fields: [friendId], references: [id], onDelete: Cascade)
+  
+  status      FriendshipStatus @default(PENDING)
+  isCloseFriend Boolean        @default(false) // For spatial orb display
+  friendshipStartDate DateTime? // When the friendship began
+  
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  
+  @@unique([userId, friendId])
+  @@index([userId, status])
+  @@index([friendId, status])
+  @@index([userId, isCloseFriend])
+}
+
+model RelationshipCategory {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name          String   // e.g., "Work", "Family", "Social"
+  icon          String?  // Optional emoji or icon identifier
+  order         Int      @default(0)  // For custom ordering
+  isDefault     Boolean  @default(false)  // System-provided defaults
+  
+  subcategories RelationshipSubcategory[]
+  relationships FriendRelationship[]  // Direct category assignment
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  @@index([userId, order])
+  @@index([userId, isDefault])
+}
+
+model RelationshipSubcategory {
+  id            String              @id @default(cuid())
+  categoryId    String
+  category      RelationshipCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  
+  userId        String
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name          String              // e.g., "Colleague", "Manager", "Client"
+  icon          String?
+  order         Int                 @default(0)
+  isDefault     Boolean             @default(false)
+  
+  details       RelationshipDetail[]
+  relationships FriendRelationship[]
+  
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  
+  @@index([categoryId, order])
+  @@index([userId])
+}
+
+model RelationshipDetail {
+  id              String                  @id @default(cuid())
+  subcategoryId   String
+  subcategory     RelationshipSubcategory @relation(fields: [subcategoryId], references: [id], onDelete: Cascade)
+  
+  userId          String
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name            String                  // e.g., "Engineering Team", "Marketing Department"
+  icon            String?
+  order           Int                     @default(0)
+  isDefault       Boolean                 @default(false)
+  
+  relationships   FriendRelationship[]
+  
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  
+  @@index([subcategoryId, order])
+  @@index([userId])
+}
+
+model FriendRelationship {
+  id              String                  @id @default(cuid())
+  userId          String                  // Owner of this relationship definition
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  friendId        String                  // The friend being categorized
+  // Note: No foreign key to User to avoid circular relation issues
+  // Validated at application level
+  
+  categoryId      String?                 // Can be just category
+  category        RelationshipCategory?   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  
+  subcategoryId   String?                 // Or category + subcategory
+  subcategory     RelationshipSubcategory? @relation(fields: [subcategoryId], references: [id], onDelete: Cascade)
+  
+  detailId        String?                 // Or full 3-level path
+  detail          RelationshipDetail?     @relation(fields: [detailId], references: [id], onDelete: Cascade)
+  
+  customLabel     String?                 // Optional override (e.g., "Best friend from college")
+  
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  
+  @@index([userId, friendId])
+  @@index([friendId])  // For reverse lookups
+  @@index([categoryId])
+  @@index([subcategoryId])
+  @@index([detailId])
+}
+
+model Group {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  avatarUrl   String?       // Optional group avatar
+  coverImage  String?       // Cover/banner image
+  color       String?       // Theme color (hex)
+  privacy     GroupPrivacy  @default(FRIENDS_ONLY)
+  memberCount Int           @default(0)  // Denormalized for performance
+  
+  creatorId   String
+  creator     User          @relation("GroupCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  
+  members     GroupMember[]
+  memories    Memory[]
+  invitations GroupInvitation[]
+  
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  
+  @@index([creatorId])
+  @@index([privacy])
+}
+
+model GroupMember {
+  id        String          @id @default(cuid())
+  
+  groupId   String
+  group     Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  role      GroupMemberRole @default(MEMBER)
+  joinedAt  DateTime        @default(now())
+  invitedBy String?         // User ID who invited this member
+  
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@index([groupId])
+  @@index([groupId, role])
+}
+
+model GroupInvitation {
+  id         String           @id @default(cuid())
+  
+  groupId    String
+  group      Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  
+  inviterId  String
+  inviter    User             @relation("GroupInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  
+  inviteeId  String
+  invitee    User             @relation("GroupInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+  
+  status     InvitationStatus @default(PENDING)
+  
+  createdAt  DateTime         @default(now())
+  expiresAt  DateTime?        // Optional expiration (e.g., 7 days)
+  respondedAt DateTime?       // When user accepted/declined
+  
+  @@unique([groupId, inviteeId])
+  @@index([inviteeId, status])
+  @@index([groupId, status])
+}
+
+model Category {
+  id          String           @id @default(cuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name        String
+  color       String?          // Hex color code like "#FF6B6B"
+  icon        String?          // Icon identifier (e.g., "Star", "Heart")
+  isProtected Boolean          @default(false)  // System categories like "Core Memories" cannot be deleted
+  
+  memories    MemoryCategory[]
+  
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  
+  @@index([userId])
+  @@index([userId, isProtected])
+}
+
+model MemoryCategory {
+  id         String   @id @default(cuid())
+  
+  memoryId   String
+  memory     Memory   @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  
+  createdAt  DateTime @default(now())
+  
+  @@unique([memoryId, categoryId])
+  @@index([memoryId])
+  @@index([categoryId])
+}
+
+// Memory Collections - auto-generated when memories are linked
+model MemoryCollection {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title           String   // Auto-set from first memory, editable
+  description     String?
+  icon            String?  @default("📦")
+  color           String?  @default("#8B5CF6")
+  coverImageUrl   String? // Optional cover photo
+  isAutoGenerated Boolean  @default(true) // All collections are auto-created via linking
+  
+  memories        MemoryInCollection[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([userId, isAutoGenerated])
+}
+
+model MemoryInCollection {
+  id           String   @id @default(cuid())
+  memoryId     String
+  collectionId String
+  order        Int      @default(0) // For manual ordering
+  addedAt      DateTime @default(now())
+  
+  memory       Memory           @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  collection   MemoryCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  
+  @@unique([memoryId, collectionId])
+  @@index([collectionId])
+  @@index([memoryId])
+}
+
+
+model GroupMessage {
+  id        String   @id @default(cuid())
+  content   String
+  groupId   String
+  senderId  String
+
+  sender    User     @relation("SentGroupMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([groupId, createdAt])
+  @@index([senderId])
+}
+
+model DirectMessage {
+  id          String   @id @default(cuid())
+  content     String
+  senderId    String
+  recipientId String
+  read        Boolean  @default(false)
+  
+  sender      User     @relation("SentDirectMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient   User     @relation("ReceivedDirectMessages", fields: [recipientId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([senderId, recipientId])
+  @@index([recipientId, read])
+}
