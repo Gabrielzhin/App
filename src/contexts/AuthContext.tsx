@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { authService } from '../services/auth';
 import { api } from '../services/api';
 import { socketService } from '../services/socket';
@@ -12,6 +13,7 @@ interface AuthContextType {
   register: (email: string, username: string, password: string, displayName?: string, referralCode?: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  refetchUser: () => Promise<void>;
   updateUser: (data: Partial<User>) => void;
 }
 
@@ -25,6 +27,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     initAuth();
   }, []);
+
+  // Auto-refresh user data when app comes to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && user) {
+        // App just became active - refresh user data to get latest subscription status
+        console.log('🔄 App became active, refreshing user data...');
+        try {
+          const userData = await authService.getMe();
+          setUser(userData);
+          console.log('✅ User data refreshed');
+        } catch (error) {
+          console.log('Failed to refresh user on app focus:', error);
+        }
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [user]);
 
   const initAuth = async () => {
     console.log('🔐 Initializing auth...');
@@ -124,6 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     register,
     logout,
     refreshUser,
+    refetchUser: refreshUser, // Alias for refreshUser
     updateUser,
   };
 

@@ -1,9 +1,10 @@
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, LinkingOptions } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useAuth } from '../contexts/AuthContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Linking from 'expo-linking';
 
 // Import screens (we'll create these next)
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -37,6 +38,8 @@ import FriendsListScreen from '../screens/main/FriendsListScreen';
 import MyQuizScreen from '../screens/main/MyQuizScreen';
 import TakeFriendQuizScreen from '../screens/main/TakeFriendQuizScreen';
 import QuizResultsScreen from '../screens/main/QuizResultsScreen';
+import SubscriptionSuccessScreen from '../screens/main/SubscriptionSuccessScreen';
+import SubscriptionCancelScreen from '../screens/main/SubscriptionCancelScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -65,6 +68,8 @@ export type MainStackParamList = {
   Collections: undefined;
   CollectionDetail: { collectionId: string };
   CreateMemory: undefined;
+  SubscriptionSuccess: { session_id?: string };
+  SubscriptionCancel: undefined;
 };
 
 function AuthStack() {
@@ -229,6 +234,16 @@ function MainStackScreen() {
         component={EditProfileScreen}
         options={{ presentation: 'modal' }}
       />
+      <MainStack.Screen 
+        name="SubscriptionSuccess" 
+        component={SubscriptionSuccessScreen}
+        options={{ headerShown: false }}
+      />
+      <MainStack.Screen 
+        name="SubscriptionCancel" 
+        component={SubscriptionCancelScreen}
+        options={{ headerShown: false }}
+      />
     </MainStack.Navigator>
   );
 }
@@ -236,13 +251,37 @@ function MainStackScreen() {
 export default function RootNavigator() {
   const { isAuthenticated, loading } = useAuth();
 
+  const linking: LinkingOptions<any> = {
+    prefixes: [
+      'livearch://',
+      'http://192.168.7.212:3000',
+      'http://localhost:3000'
+    ],
+    config: {
+      screens: {
+        MainTabs: {
+          screens: {
+            ProfileTab: {
+              screens: {
+                ProfileMain: 'profile',
+                PricingScreen: 'pricing',
+              },
+            },
+          },
+        },
+        SubscriptionSuccess: 'subscription-success',
+        SubscriptionCancel: 'subscription-cancel',
+      },
+    },
+  };
+
   if (loading) {
     // You can return a loading screen here
     return null;
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer linking={linking}>
       {isAuthenticated ? <MainStackScreen /> : <AuthStack />}
     </NavigationContainer>
   );

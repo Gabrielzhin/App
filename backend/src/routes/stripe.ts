@@ -66,6 +66,8 @@ export async function stripeRoutes(fastify: FastifyInstance) {
         }
 
         // Create Checkout session
+        // Use HTTP URLs to serve redirect HTML pages that trigger deep links
+        const backendUrl = process.env.BACKEND_URL || 'http://192.168.6.86:4000';
         const session = await stripe.checkout.sessions.create({
           customer: customerId,
           mode: 'subscription',
@@ -76,12 +78,16 @@ export async function stripeRoutes(fastify: FastifyInstance) {
               quantity: 1,
             },
           ],
-          success_url: successUrl || `${process.env.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/pricing`,
+          success_url: successUrl || `${backendUrl}/subscription-success.html?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: cancelUrl || `${backendUrl}/subscription-cancel.html`,
           metadata: {
             userId: user.id,
           },
         });
+
+        console.log(`[Stripe] Created checkout session: ${session.id}`);
+        console.log(`[Stripe] Success URL: ${session.success_url}`);
+        console.log(`[Stripe] Cancel URL: ${session.cancel_url}`);
 
         return reply.send({
           sessionId: session.id,

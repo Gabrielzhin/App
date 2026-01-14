@@ -334,7 +334,7 @@ export default async function collectionRoutes(fastify: FastifyInstance) {
       const { id: collectionId } = request.params as { id: string };
 
       try {
-        const collection = await collectionService.getById(collectionId);
+        const collection = await collectionService.getById(collectionId, userId);
         
         if (!collection) {
           return reply.code(404).send({ error: 'Collection not found' });
@@ -343,7 +343,7 @@ export default async function collectionRoutes(fastify: FastifyInstance) {
         // Check if user owns or collaborates on this collection
         const isOwner = collection.userId === userId;
         const isCollaborator = collection.collaborators?.some(
-          c => c.userId === userId && c.status === 'ACTIVE'
+          c => c.userId === userId
         );
 
         if (!isOwner && !isCollaborator) {

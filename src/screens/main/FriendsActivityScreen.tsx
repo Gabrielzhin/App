@@ -84,7 +84,7 @@ export default function FriendsActivityScreen({ navigation, route }: any) {
             break;
         }
       } else {
-        // Default: last 7 days of all memories
+        // Default: last 7 days of memories (friends and own only - backend already filters)
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
         filtered = data.filter((memory: Memory) => 

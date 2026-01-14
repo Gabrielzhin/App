@@ -134,18 +134,29 @@ async function handleSubscriptionUpdate(subscription: Stripe.Subscription) {
 
   console.log(`[Webhook] Found user ${user.id} (${user.email}), current mode: ${user.mode}`);
 
+  // Safely extract timestamp fields - Stripe uses Unix timestamps (seconds)
+  const currentPeriodStart = (subscription as any).current_period_start 
+    ? new Date((subscription as any).current_period_start * 1000) 
+    : new Date();
+  
+  const currentPeriodEnd = (subscription as any).current_period_end 
+    ? new Date((subscription as any).current_period_end * 1000) 
+    : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days from now as fallback
+
   const subscriptionData = {
     stripeSubscriptionId: subscription.id,
     stripeCustomerId: customerId,
     status,
     plan: subscription.items.data[0]?.price.id || 'unknown',
-    currentPeriodStart: new Date((subscription as any).current_period_start * 1000),
-    currentPeriodEnd: new Date((subscription as any).current_period_end * 1000),
-    trialStart: (subscription as any).trial_start ? new Date((subscription as any).trial_start * 1000) : null,
-    trialEnd: (subscription as any).trial_end ? new Date((subscription as any).trial_end * 1000) : null,
-    cancelAtPeriodEnd: (subscription as any).cancel_at_period_end,
-    canceledAt: (subscription as any).canceled_at ? new Date((subscription as any).canceled_at * 1000) : null,
+    currentPeriodStart,
+    currentPeriodEnd,
+    trialStart: subscription.trial_start ? new Date(subscription.trial_start * 1000) : null,
+    trialEnd: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
+    cancelAtPeriodEnd: subscription.cancel_at_period_end || false,
+    canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
   };
+
+  console.log(`[Webhook] Subscription dates - Start: ${currentPeriodStart}, End: ${currentPeriodEnd}`);
 
   // Upsert subscription
   await prisma.subscription.upsert({

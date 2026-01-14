@@ -34,7 +34,6 @@ export async function userRoutes(fastify: FastifyInstance) {
             name: true,
             bio: true,
             profilePicture: true,
-            coverImage: true,
             mode: true,
             emailVerified: true,
             phoneVerified: true,

@@ -69,9 +69,9 @@ export function categoryRoutes(fastify: FastifyInstance) {
 
   // Get all categories for the authenticated user
   // Query param: ?groupId=xxx to filter by specific group
-  fastify.get('/api/categories', {
+  fastify.get<{ Querystring: { groupId?: string } }>('/api/categories', {
     preHandler: [fastify.authenticate],
-  }, async (request: FastifyRequest<{ Querystring: { groupId?: string } }>, reply: FastifyReply) => {
+  }, async (request, reply) => {
     const user = request.user;
     const { groupId } = request.query;
 

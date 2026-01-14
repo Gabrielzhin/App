@@ -26,7 +26,6 @@ import { commentService } from '../../services/comment';
 import { reactionService } from '../../services/reaction';
 import { collectionService, type Collection } from '../../services/collection';
 import { friendService, type Friendship } from '../../services/friend';
-import { useMemoryDetail } from '../../hooks/useQueries';
 import { Memory, Comment, Reaction, ReactionType } from '../../types';
 import { REACTION_OPTIONS, getReactionLabel, getReactionIcon } from '../../utils/reactions';
 import { useAuth } from '../../contexts/AuthContext';
@@ -499,7 +498,7 @@ export default function MemoryDetailScreen({ route, navigation }: Props) {
     return date.toLocaleDateString();
   };
 
-  if (loadingMemory || loading) {
+  if (loading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6366f1" />

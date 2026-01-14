@@ -677,26 +677,35 @@ export async function friendRoutes(fastify: FastifyInstance) {
           return reply.code(404).send({ error: 'Friendship not found' });
         }
 
-        // Update or create friend relationship
-        await prisma.friendRelationship.upsert({
+        // Find existing friend relationship
+        const existing = await prisma.friendRelationship.findFirst({
           where: {
-            userId_friendId: {
-              userId: userId,
-              friendId: friendId,
-            },
-          },
-          update: {
-            customLabel: relationship,
-            categoryId: null,
-            subcategoryId: null,
-            detailId: null,
-          },
-          create: {
             userId: userId,
             friendId: friendId,
-            customLabel: relationship,
           },
         });
+
+        if (existing) {
+          // Update existing relationship
+          await prisma.friendRelationship.update({
+            where: { id: existing.id },
+            data: {
+              customLabel: relationship,
+              categoryId: null,
+              subcategoryId: null,
+              detailId: null,
+            },
+          });
+        } else {
+          // Create new relationship
+          await prisma.friendRelationship.create({
+            data: {
+              userId: userId,
+              friendId: friendId,
+              customLabel: relationship,
+            },
+          });
+        }
 
         return reply.send({ success: true });
       } catch (error: any) {

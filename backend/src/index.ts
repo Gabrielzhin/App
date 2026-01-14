@@ -3,7 +3,13 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import multipart from '@fastify/multipart';
 import compress from '@fastify/compress';
+import fastifyStatic from '@fastify/static';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { PrismaClient, UserMode } from '@prisma/client';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const prisma = new PrismaClient();
 const fastify = Fastify({
@@ -78,6 +84,12 @@ await fastify.register(compress, {
   global: true,
   encodings: ['gzip', 'deflate'],
   threshold: 1024, // Only compress responses larger than 1KB
+});
+
+// Serve static files from public directory (for Stripe redirect pages)
+await fastify.register(fastifyStatic, {
+  root: path.join(__dirname, '..', 'public'),
+  prefix: '/',
 });
 // Extend FastifyInstance with custom decorators
 declare module 'fastify' {

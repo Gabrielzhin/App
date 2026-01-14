@@ -31,6 +31,11 @@ export default function GroupsScreen({ navigation, route }: any) {
   // Use React Query for search
   const { data: searchResults = [], isLoading: searching } = useDiscoverGroups(searchQuery);
 
+  // Handle search input changes
+  const handleSearch = (text: string) => {
+    setSearchQuery(text);
+  };
+
   useFocusEffect(
     React.useCallback(() => {
       refetch(); // Refetch on screen focus

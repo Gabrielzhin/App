@@ -201,15 +201,11 @@ export async function memoryRoutes(fastify: FastifyInstance) {
                 { privacy: { in: ['PUBLIC', 'FRIENDS'] } },  // Not private
               ],
             },
-            // Friends' memories with FRIENDS privacy
+            // Friends' memories with FRIENDS or PUBLIC privacy
             ...(friendIds.length > 0 ? [{
               userId: { in: friendIds },
-              privacy: 'FRIENDS',
+              privacy: { in: ['FRIENDS' as const, 'PUBLIC' as const] },
             }] : []),
-            // Anyone's PUBLIC memories
-            {
-              privacy: 'PUBLIC',
-            },
           ],
         },
         select: memoryTimelineSelect, // Use optimized select (60-70% smaller payload)
@@ -304,17 +300,17 @@ export async function memoryRoutes(fastify: FastifyInstance) {
             // Friend's PUBLIC memories (always visible)
             {
               userId: friendId,
-              privacy: 'PUBLIC',
+              privacy: 'PUBLIC' as const,
             },
             // Friend's FRIENDS memories (only if we're friends)
             ...(areFriends ? [{
               userId: friendId,
-              privacy: 'FRIENDS',
+              privacy: 'FRIENDS' as const,
             }] : []),
             // Friend's ONLY_TAGGED memories (only if current user is tagged)
             {
               userId: friendId,
-              privacy: 'ONLY_TAGGED',
+              privacy: 'ONLY_TAGGED' as const,
               taggedUserIds: { has: currentUserId },
             },
           ],
