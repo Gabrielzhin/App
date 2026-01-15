@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { orbitService } from '../services/orbit';
+import { orbitService } from '../services/orbit.js';
 import { OrbitItemType } from '@prisma/client';
 
 export async function orbitRoutes(fastify: FastifyInstance) {
