@@ -1,8 +1,8 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { hashPassword, comparePassword } from '../utils/password.js';
-import { seedDefaultRelationships } from '../../prisma/seed-relationships.js';
-import { seedCoreMemoriesCategory } from '../../prisma/seed-core-memories.js';
+import { seedDefaultRelationships } from '../seeds/seed-relationships.js';
+import { seedCoreMemoriesCategory } from '../seeds/seed-core-memories.js';
 
 const prisma = new PrismaClient();
 
